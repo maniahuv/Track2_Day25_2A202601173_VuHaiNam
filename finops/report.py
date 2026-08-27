@@ -3,8 +3,14 @@ from __future__ import annotations
 
 
 def build_report(baseline_usd: float, optimized_usd: float, levers: dict,
-                 sustainability: dict | None = None, period: str = "monthly") -> str:
-    """Return a markdown cost-optimization report."""
+                 sustainability: dict | None = None, period: str = "monthly",
+                 analysis: str | None = None) -> str:
+    """Return a markdown cost-optimization report.
+
+    `analysis` is an optional pre-written markdown block (root-cause explanation +
+    prioritized recommendations) appended as its own section — the numbers above
+    are machine-generated every run, but *why* they matter needs a human writer.
+    """
     savings = baseline_usd - optimized_usd
     pct = (savings / baseline_usd * 100.0) if baseline_usd > 0 else 0.0
     lines = [
@@ -38,6 +44,8 @@ def build_report(baseline_usd: float, optimized_usd: float, levers: dict,
                 f"- Reasoning cap at 5% of requests would save "
                 f"{sustainability.get('reasoning_cap_5pct_wh_saved_daily', 0):,.0f} Wh/day",
             ]
+    if analysis:
+        lines += ["", "## Analysis & Recommendations", "", analysis.strip()]
     lines += ["", "_Figures are June-2026 as-of snapshots; re-baseline before acting._"]
     return "\n".join(lines)
 

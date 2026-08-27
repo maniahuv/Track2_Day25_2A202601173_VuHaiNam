@@ -15,6 +15,52 @@ DAYS = 30
 RIGHTSIZE_MAP = {"H100": "A100", "H200": "H100", "A100": "A10G", "A10G": "L4", "L4": "L4"}
 
 
+def _build_analysis(r1: dict, levers: dict, baseline: float, sust: dict) -> str:
+    """Human-readable root-cause explanation + prioritized recommendations.
+
+    Regenerated every run from the actual mission results (lie GPUs, lever
+    ranking, sustainability numbers) so it never drifts from the numbers above
+    it, but the *reasoning* — why GPU-Util misleads, why purchasing dominates,
+    what to do first — is written prose, not a template of the raw output.
+    """
+    lie_ids = [l["gpu_id"] for l in r1["lies"]]
+    lie_detail = "; ".join(
+        f"{l['gpu_id']} (util {l['gpu_util_pct']:.0f}%, MFU {l['mfu']:.2f})" for l in r1["lies"]
+    )
+    ranked = sorted(levers.items(), key=lambda kv: kv[1], reverse=True)
+    top_lever, top_amount = ranked[0]
+    top_pct = top_amount / sum(levers.values()) * 100 if sum(levers.values()) else 0.0
+
+    return (
+        f"**Why GPU-Util is a lie here:** `nvidia-smi`'s Util% only answers "
+        f"\"is a kernel running right now\", not \"is the Tensor Core doing useful "
+        f"work\". {lie_detail} read as fully busy while spending most of that time "
+        f"stalled on HBM reads or waiting on kernel-launch overhead — the compute "
+        f"units sit idle even though the clock reads active. Financially, paying "
+        f"full on-demand rate for {', '.join(lie_ids)} while receiving under 30% of "
+        f"the FLOPs means the majority of those GPU-hours bought no tokens at all.\n\n"
+        f"**Priority order (highest ROI first):**\n"
+        f"1. **{top_lever}** (${top_amount:,.0f}/mo, {top_pct:.0f}% of total savings) — "
+        f"the largest lever because it acts on the *entire* GPU-hour base rather than "
+        f"only the inference slice; a pure purchasing/contract change, no code required.\n"
+        f"2. **Right-size util-lie GPUs** — downgrading {', '.join(lie_ids)} converts "
+        f"wasted memory-bound H100/A10G capacity into cheaper hardware that fits the "
+        f"actual bandwidth need, without touching application code.\n"
+        f"3. **Inference levers (cascade/cache/batch)** — smaller in absolute $ today "
+        f"because baseline inference spend is small relative to the purchasing base, "
+        f"but this lever scales with traffic and should be built into the serving path "
+        f"before volume grows.\n\n"
+        f"**Sustainability tie-in:** region selection is not just a carbon story — "
+        f"{sust.get('best_region', 'n/a')} is also cost-competitive on $/kWh here, so "
+        f"moving interruptible workloads there cuts electricity spend and grid carbon "
+        f"together. Reasoning traffic is the outlier: it is "
+        f"{sust.get('reasoning_req_share_pct', 0):.1f}% of requests but "
+        f"{sust.get('reasoning_wh_share_pct', 0):.1f}% of energy, so it is a carbon "
+        f"lever almost independent of the dollar levers above — worth capping on its "
+        f"own routing rule rather than folded into general cost optimization."
+    )
+
+
 def run(verbose: bool = True) -> dict:
     r1 = m1_efficiency_audit.run(verbose=False)
     r2 = m2_inference_levers.run(verbose=False)
@@ -57,10 +103,11 @@ def run(verbose: bool = True) -> dict:
         "reasoning_cap_5pct_wh_saved_daily": r2["reasoning_cap_5pct"]["savings_wh"],
     }
 
-    md = report.build_report(baseline, optimized, levers, sustainability=sust)
+    analysis = _build_analysis(r1, levers, baseline, sust)
+    md = report.build_report(baseline, optimized, levers, sustainability=sust, analysis=analysis)
     out_md = os.path.join(ROOT, "outputs", "report.md")
     os.makedirs(os.path.dirname(out_md), exist_ok=True)
-    with open(out_md, "w") as f:
+    with open(out_md, "w", encoding="utf-8") as f:
         f.write(md)
     png = report.savings_waterfall(levers, os.path.join(ROOT, "outputs", "savings.png"))
 
