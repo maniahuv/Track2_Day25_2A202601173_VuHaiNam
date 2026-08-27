@@ -50,6 +50,11 @@ def run(verbose: bool = True) -> dict:
         "wh_per_query": wh,
         "carbon_g": sustainability.carbon_g(wh, "us-east-1"),
         "best_region": min(sustainability.REGION_CARBON, key=sustainability.REGION_CARBON.get),
+        # Extension 4: reasoning traffic is a disproportionate energy driver —
+        # surfaced here alongside the rest of the sustainability numbers.
+        "reasoning_req_share_pct": r2["reasoning_req_share_pct"],
+        "reasoning_wh_share_pct": r2["reasoning_wh_share_pct"],
+        "reasoning_cap_5pct_wh_saved_daily": r2["reasoning_cap_5pct"]["savings_wh"],
     }
 
     md = report.build_report(baseline, optimized, levers, sustainability=sust)
