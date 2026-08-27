@@ -135,6 +135,42 @@ def recommend_tier_v2(
     return "on_demand"
 
 
+def cache_is_worth_it(
+    avg_cache_reads: float,
+    write_cost_per_m: float,
+    price_in_per_m: float,
+    read_discount: float = 0.10,   # 10% = 90% off, same knob as request_cost's cache_discount
+) -> bool:
+    """Does prompt caching actually save money for this traffic pattern?
+
+    Caching a prefix isn't free: writing it costs `write_cost_per_m` $/1M tokens
+    (a one-time premium over the normal input price, e.g. Anthropic's ~1.25x
+    write surcharge). Reading it back is cheap (`read_discount` x normal price).
+    The write only pays for itself once enough *re-reads* have accumulated to
+    beat what those tokens would have cost at the normal input price every time.
+
+    Break-even: write_cost <= avg_cache_reads * (price_in_per_m - price_in_per_m*read_discount)
+             -> avg_cache_reads >= write_cost / (price_in_per_m * (1 - read_discount))
+
+    Returns True iff the measured average re-read count clears that bar.
+    """
+    if price_in_per_m <= 0 or read_discount >= 1.0:
+        return False
+    per_read_saving = price_in_per_m * (1.0 - read_discount)
+    if per_read_saving <= 0:
+        return False
+    breakeven_reads = write_cost_per_m / per_read_saving
+    return avg_cache_reads >= breakeven_reads
+
+
+def cache_breakeven_reads(write_cost_per_m: float, price_in_per_m: float, read_discount: float = 0.10) -> float:
+    """Minimum average re-reads per cached prefix needed for caching to pay off."""
+    per_read_saving = price_in_per_m * (1.0 - read_discount)
+    if per_read_saving <= 0:
+        return float("inf")
+    return write_cost_per_m / per_read_saving
+
+
 def spot_checkpoint_cost(
     job_hours: float,
     spot_hr: float,
