@@ -61,3 +61,70 @@ def flag_util_lies(rows, util_threshold: float = 0.90, mfu_threshold: float = 0.
 def idle_waste_usd(idle_hours: float, on_demand_hr: float) -> float:
     """Dollars burned by a GPU left running idle (training done, instance up)."""
     return max(0.0, idle_hours) * max(0.0, on_demand_hr)
+
+
+# Extension 2 — right-sizing memory-bound inference GPUs by MBU.
+#
+# A GPU with low MBU on an inference workload isn't "inefficient" in a way more
+# compute fixes — decode is memory-bound (see roofline_regime), so what actually
+# matters is whether the achieved HBM bandwidth could be served by a *cheaper*
+# card with enough bandwidth headroom, not raw FLOPs. Picking on $/GPU-hr alone
+# ignores this: a cheaper GPU with too little bandwidth just pushes the
+# bottleneck lower and can silently degrade latency.
+MBU_TARGET = 0.60  # deck §5: healthy MBU for H100-80GB batch-1 decode
+
+
+def dollars_per_gb_vram(on_demand_hr: float, hbm_gb: float) -> float:
+    """$/GPU-hr per GB of HBM capacity — the unit right-sizing decisions should use."""
+    if hbm_gb <= 0:
+        return float("inf")
+    return on_demand_hr / hbm_gb
+
+
+def is_memory_bound_underutilized(mbu: float, target: float = MBU_TARGET) -> bool:
+    """True if a GPU is running its memory subsystem well below the healthy target."""
+    return mbu < target
+
+
+def recommend_rightsize(
+    current_type: str,
+    achieved_bw_tbs: float,
+    catalog: dict,
+    bw_headroom: float = 1.15,
+) -> dict | None:
+    """Suggest a cheaper GPU that still covers the *measured* bandwidth need.
+
+    `catalog` maps gpu_type -> row dict with on_demand_hr/hbm_gb/peak_bw_tbs.
+    Only proposes candidates whose peak_bw_tbs comfortably covers what the
+    workload actually achieved (headroom factor), so the swap doesn't just move
+    the bottleneck. Returns None if no cheaper candidate qualifies.
+    """
+    current = catalog.get(current_type)
+    if current is None:
+        return None
+    needed_bw = achieved_bw_tbs * bw_headroom
+    current_hr = float(current["on_demand_hr"])
+
+    best = None
+    for gtype, row in catalog.items():
+        if gtype == current_type:
+            continue
+        peak_bw = float(row["peak_bw_tbs"])
+        hr = float(row["on_demand_hr"])
+        if peak_bw >= needed_bw and hr < current_hr:
+            if best is None or hr < float(best["on_demand_hr"]):
+                best = {**row, "gpu_type": gtype}
+
+    if best is None:
+        return None
+
+    savings_per_hr = current_hr - float(best["on_demand_hr"])
+    savings_pct = savings_per_hr / current_hr * 100.0 if current_hr > 0 else 0.0
+    return {
+        "from_type": current_type,
+        "to_type": best["gpu_type"],
+        "from_hr": current_hr,
+        "to_hr": float(best["on_demand_hr"]),
+        "savings_per_hr": round(savings_per_hr, 4),
+        "savings_pct": round(savings_pct, 1),
+    }
