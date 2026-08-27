@@ -77,6 +77,64 @@ def recommend_tier(hours_per_day: float, interruptible: bool, reserved_discount:
     return "on_demand"
 
 
+# Extension 1 — per-GPU-type spot interruption rates (neocloud premium SKUs are
+# less contended than commodity inference cards, so they get reclaimed less often).
+GPU_INTERRUPT_RATE = {
+    "H100": 0.03,
+    "H200": 0.03,
+    "B200": 0.02,
+    "MI300X": 0.04,
+    "A100": 0.05,
+    "A10G": 0.09,
+    "L4": 0.10,
+}
+DEFAULT_INTERRUPT_RATE = 0.05
+
+
+def recommend_tier_v2(
+    hours_per_day: float,
+    interruptible: bool,
+    gpu_type: str | None = None,
+    job_days: float | None = None,
+    reserved_discount_1yr: float = 0.20,
+    reserved_discount_3yr: float = 0.45,
+    max_viable_interrupt_rate: float = 0.12,
+) -> str:
+    """Tier policy extended with GPU-specific interruption rate + 1yr-vs-3yr duration fit.
+
+    Adds two factors the v1 policy ignores:
+      1. Interruption rate varies a lot by GPU type (commodity inference cards like
+         A10G/L4 get reclaimed far more often than H100/B200). A job on a
+         high-churn GPU may not actually be spot-viable even if it is flagged
+         `interruptible`, so we fall through to duty-cycle logic instead.
+      2. A commitment should match how long the job actually runs. `job_days` here
+         is the length of the *observed run*, not a promised commitment term — a
+         short, bursty training job (a few days, then it's done) shouldn't be
+         reserved even at high duty cycle, while a steady non-interruptible
+         service observed running for weeks is exactly the profile reserved
+         pricing is meant for. Jobs that clear the bar compare 1yr vs 3yr and
+         take whichever break-even is actually cleared.
+    """
+    duty = max(0.0, hours_per_day) / 24.0
+    interrupt_rate = GPU_INTERRUPT_RATE.get((gpu_type or "").upper(), DEFAULT_INTERRUPT_RATE)
+
+    if interruptible and hours_per_day < 24 and interrupt_rate <= max_viable_interrupt_rate:
+        return "spot"
+
+    be_1yr = break_even_utilization(reserved_discount_1yr)
+    be_3yr = break_even_utilization(reserved_discount_3yr)
+
+    # A handful of short observed days (bursty training run) doesn't look like a
+    # job worth committing hardware to, even if its duty cycle is momentarily high.
+    commits_long_enough = job_days is None or job_days >= 14
+
+    if commits_long_enough and duty >= be_3yr:
+        return "reserved_3yr"
+    if commits_long_enough and duty >= be_1yr:
+        return "reserved_1yr"
+    return "on_demand"
+
+
 def spot_checkpoint_cost(
     job_hours: float,
     spot_hr: float,
