@@ -31,6 +31,13 @@ def build_report(baseline_usd: float, optimized_usd: float, levers: dict,
             f"- Carbon per query: {sustainability.get('carbon_g', 0):.3f} gCO2e",
             f"- Cheapest+cleanest region: {sustainability.get('best_region', 'n/a')}",
         ]
+        if "reasoning_req_share_pct" in sustainability:
+            lines += [
+                f"- Reasoning traffic: {sustainability['reasoning_req_share_pct']:.1f}% of requests, "
+                f"{sustainability.get('reasoning_wh_share_pct', 0):.1f}% of total energy",
+                f"- Reasoning cap at 5% of requests would save "
+                f"{sustainability.get('reasoning_cap_5pct_wh_saved_daily', 0):,.0f} Wh/day",
+            ]
     lines += ["", "_Figures are June-2026 as-of snapshots; re-baseline before acting._"]
     return "\n".join(lines)
 
